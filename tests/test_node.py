@@ -108,3 +108,24 @@ class TestOmniNodeSwarm:
         initial_generation = node.evolution.generation
         await node.create_swarm("Generation task")
         assert node.evolution.generation == initial_generation + 1
+
+
+class TestOmniNodeSafety:
+    """Test policy enforcement and kill switch behavior."""
+
+    @pytest.mark.asyncio
+    async def test_high_risk_task_blocked_by_policy(self):
+        node = OmniNode(device_id="safety_policy_test")
+        await node.start()
+        with pytest.raises(PermissionError, match="High-risk"):
+            await node.create_swarm("Run rm -rf on all files")
+        await node.stop()
+
+    @pytest.mark.asyncio
+    async def test_kill_switch_blocks_swarm(self, monkeypatch):
+        monkeypatch.setenv("OMNI_KILL_SWITCH", "1")
+        node = OmniNode(device_id="kill_switch_test")
+        await node.start()
+        with pytest.raises(RuntimeError, match="Kill switch"):
+            await node.create_swarm("Safe chemistry optimization task")
+        await node.stop()

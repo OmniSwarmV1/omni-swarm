@@ -10,7 +10,7 @@ import os
 import secrets
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 try:
     from cryptography.hazmat.primitives import serialization
@@ -117,6 +117,28 @@ class IPFSPubSubAdapter:
         return self.client.pubsub.subscribe(self.topic)
 
 
+class RendezvousBackend(Protocol):
+    def register(
+        self,
+        node_id: str,
+        address: str,
+        public_key: Optional[str] = None,
+        metadata: Optional[dict[str, str]] = None,
+    ):
+        ...
+
+    def heartbeat(
+        self,
+        node_id: str,
+        address: str,
+        metadata: Optional[dict[str, str]] = None,
+    ):
+        ...
+
+    def get_peers(self, exclude_node_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+        ...
+
+
 class P2PDiscovery:
     """Peer-to-peer discovery for OmniSwarm nodes.
 
@@ -133,12 +155,14 @@ class P2PDiscovery:
         heartbeat_interval: float = 2.0,
         peer_timeout: float = 10.0,
         enable_ipfs: Optional[bool] = None,
+        rendezvous: Optional[RendezvousBackend] = None,
     ):
         self.node_id = node_id
         self.topic = topic
         self.ipfs_api_addr = ipfs_api_addr
         self.heartbeat_interval = heartbeat_interval
         self.peer_timeout = peer_timeout
+        self.rendezvous = rendezvous
         if enable_ipfs is None:
             backend = os.environ.get("OMNI_P2P_BACKEND", "ipfs").lower()
             self.enable_ipfs = backend == "ipfs"
@@ -184,6 +208,7 @@ class P2PDiscovery:
             address="self",
             public_key=self.public_key_b64,
         )
+        self._sync_with_rendezvous()
 
         if self.enable_ipfs:
             await self._start_ipfs_backend()
@@ -256,8 +281,39 @@ class P2PDiscovery:
     async def _heartbeat_loop(self):
         while self.running:
             await asyncio.sleep(self.heartbeat_interval)
+            self._sync_with_rendezvous()
             envelope = self.build_signed_heartbeat()
             await self.broadcast(envelope)
+
+    def _sync_with_rendezvous(self):
+        if self.rendezvous is None:
+            return
+        try:
+            address = "ipfs" if self._ipfs_connected else "local"
+            metadata = {"backend": address, "topic": self.topic}
+            self.rendezvous.register(
+                node_id=self.node_id,
+                address=address,
+                public_key=self.public_key_b64,
+                metadata=metadata,
+            )
+            self.rendezvous.heartbeat(
+                node_id=self.node_id,
+                address=address,
+                metadata=metadata,
+            )
+            peers = self.rendezvous.get_peers(exclude_node_id=self.node_id, limit=20)
+            for peer in peers:
+                peer_id = peer.get("node_id")
+                if not isinstance(peer_id, str):
+                    continue
+                self.register_peer(
+                    node_id=peer_id,
+                    address=peer.get("address", "rendezvous"),
+                    public_key=peer.get("public_key"),
+                )
+        except Exception as exc:
+            print(f"   [WARN] Rendezvous sync failed ({exc}).")
 
     def build_signed_heartbeat(self) -> dict:
         payload = {
@@ -425,4 +481,5 @@ class P2PDiscovery:
             "messages_received": self._message_count,
             "signature_failures": self._signature_failures,
             "crypto_backend": self.crypto_backend,
+            "rendezvous_enabled": self.rendezvous is not None,
         }

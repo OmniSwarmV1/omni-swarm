@@ -15,6 +15,11 @@ from typing import TypedDict, List, Optional
 from core.swarm_engine import SwarmEngine
 from core.p2p_discovery import P2PDiscovery
 from core.evolution import EvolutionEngine
+from core.fitness import FitnessScorer
+from core.health import build_health_snapshot
+from core.policy_engine import PolicyEngine
+from core.sandbox import OmniSandbox
+from core.telemetry import TelemetryCollector
 from omni_token.omni_token import OmniTokenLedger
 
 
@@ -43,12 +48,20 @@ class OmniNode:
         self.mode = os.environ.get("OMNI_MODE", "mock").lower()
         if self.mode == "real":
             self.mode = "simulated_graph"
+        self.kill_switch_enabled = os.environ.get("OMNI_KILL_SWITCH", "0") == "1"
 
         # Sub-engines
+        self.sandbox = OmniSandbox(self.node_id)
+        self.policy = PolicyEngine(
+            allow_medium_risk=os.environ.get("OMNI_ALLOW_MEDIUM_RISK", "0") == "1"
+        )
+        self.telemetry = TelemetryCollector(self.node_id, self.sandbox.root_path)
         self.p2p = P2PDiscovery(self.node_id)
         self.swarm_engine = SwarmEngine(self.node_id)
         self.evolution = EvolutionEngine()
+        self.fitness_scorer = FitnessScorer()
         self.ledger = OmniTokenLedger()
+        self.policy_block_count = 0
 
         # Lazy simulated-graph imports (only when needed)
         self._langgraph_loaded = False
@@ -75,6 +88,7 @@ class OmniNode:
         """Boot the node: activate P2P discovery and join the swarm network."""
         self.active = True
         print("[NET] P2P discovery basladi... (IPFS + Tor simule)")
+        self.telemetry.emit("node_start", {"mode": self.mode})
         await self.p2p.start()
         if not self.evolution.population:
             self.evolution.initialize_population(
@@ -86,6 +100,7 @@ class OmniNode:
         """Gracefully shut down the node."""
         self.active = False
         await self.p2p.stop()
+        self.telemetry.emit("node_stop", {"active": self.active})
         print(f"[STOP] Node {self.node_id} durduruldu.")
 
     async def create_swarm(self, task: str) -> dict:
@@ -96,6 +111,31 @@ class OmniNode:
         """
         if not self.active:
             raise RuntimeError("Node is not active. Call start() first.")
+        if self.kill_switch_enabled:
+            raise RuntimeError("Kill switch is enabled. Swarm creation is blocked.")
+
+        decision = self.policy.evaluate(action="create_swarm", task=task)
+        self.telemetry.emit(
+            "policy_decision",
+            {
+                "allowed": decision.allowed,
+                "risk_level": decision.risk_level.value,
+                "reason": decision.reason,
+            },
+        )
+        if not decision.allowed:
+            self.policy_block_count += 1
+            self.telemetry.emit(
+                "policy_blocked",
+                {"task": task, "reason": decision.reason},
+                level="WARN",
+            )
+            raise PermissionError(decision.reason)
+
+        self.sandbox.write_text(
+            f"tasks/{uuid.uuid4().hex}.txt",
+            task,
+        )
 
         print(f"[SWARM] Yeni swarm olusturuluyor: {task}")
 
@@ -123,23 +163,43 @@ class OmniNode:
             "node_reward": royalty["node_reward"],
             "status": "COMPLETED",
         }
+        self.sandbox.write_text(
+            f"results/{uuid.uuid4().hex}.json",
+            str(discovery),
+        )
+        self.telemetry.emit(
+            "swarm_completed",
+            {
+                "task": task,
+                "generation": self.evolution.generation,
+                "royalty_total": royalty["total"],
+            },
+        )
         print("[DONE] Swarm tamamlandi! Royalty hazir.")
         return discovery
 
+    def get_health(self) -> dict:
+        """Return a compact health snapshot for operations checks."""
+        snapshot = build_health_snapshot(
+            node_id=self.node_id,
+            active=self.active,
+            mode=self.mode,
+            p2p_running=self.p2p.running,
+            alive_peers=self.p2p.peer_count,
+            generation=self.evolution.generation,
+            total_tasks=len(self.evolution.history),
+            policy_blocks=self.policy_block_count,
+            telemetry_events=self.telemetry.count,
+        )
+        return snapshot.to_dict()
+
     def _score_swarm_result(self, task: str, result: str) -> float:
-        """Derive a bounded fitness score for one completed swarm."""
-        result_text = (result or "").lower()
-        task_text = (task or "").lower()
-
-        score = 0.40
-        if "completed" in result_text:
-            score += 0.20
-        if "simulated discovery" in result_text:
-            score += 0.15
-        if any(word in task_text for word in ["optimiz", "kesfet", "patent", "discover"]):
-            score += 0.10
-
-        return max(0.0, min(1.0, round(score, 3)))
+        """Derive a bounded verification-based fitness score for one swarm."""
+        return self.fitness_scorer.score_from_result(
+            task=task,
+            result=result,
+            compute_share=self.compute_share,
+        )
 
     def _run_evolution_cycle(self, task: str, result: str):
         """Evaluate current genomes and evolve to next generation."""

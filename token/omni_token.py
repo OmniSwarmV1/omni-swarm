@@ -8,6 +8,11 @@
 #
 # This is a local stub. On-chain integration (Solana / custom L2) planned for v0.3.
 
+import hashlib
+import hmac
+import json
+import secrets
+import time
 from typing import Optional
 
 
@@ -28,6 +33,9 @@ class OmniTokenLedger:
     def __init__(self):
         self.balances: dict[str, float] = {}
         self.transactions: list[dict] = []
+        self.receipts: list[dict] = []
+        self._seen_receipt_ids: set[str] = set()
+        self._receipt_secret = secrets.token_bytes(32)
         self.total_distributed: float = 0.0
 
     def get_balance(self, account: str) -> float:
@@ -89,6 +97,76 @@ class OmniTokenLedger:
             "reason": reason,
         })
 
+    def _sign_receipt_payload(self, payload: dict) -> str:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hmac.new(self._receipt_secret, body, hashlib.sha256).hexdigest()
+
+    def create_signed_receipt(
+        self,
+        account: str,
+        amount: float,
+        reason: str,
+        task: str = "",
+    ) -> dict:
+        """Create a signed receipt for one credit action."""
+        payload = {
+            "account": account,
+            "amount": round(amount, 8),
+            "reason": reason,
+            "task": task,
+            "timestamp": round(time.time(), 6),
+            "nonce": secrets.token_hex(8),
+        }
+        signature = self._sign_receipt_payload(payload)
+        receipt_id = hashlib.sha256(
+            f"{signature}:{payload['account']}:{payload['nonce']}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "receipt_id": receipt_id,
+            "payload": payload,
+            "signature": signature,
+        }
+
+    def verify_signed_receipt(self, receipt: dict) -> bool:
+        """Verify receipt signature and payload shape."""
+        if not isinstance(receipt, dict):
+            return False
+        payload = receipt.get("payload")
+        signature = receipt.get("signature")
+        if not isinstance(payload, dict) or not isinstance(signature, str):
+            return False
+        expected = self._sign_receipt_payload(payload)
+        return hmac.compare_digest(signature, expected)
+
+    def apply_signed_receipt(self, receipt: dict):
+        """Apply one signed receipt exactly once (replay-protected)."""
+        if not self.verify_signed_receipt(receipt):
+            raise ValueError("Invalid signed receipt.")
+
+        receipt_id = receipt.get("receipt_id")
+        if not isinstance(receipt_id, str):
+            raise ValueError("Missing receipt_id.")
+        if receipt_id in self._seen_receipt_ids:
+            raise ValueError("Receipt replay detected.")
+
+        payload = receipt["payload"]
+        self.credit(
+            account=payload["account"],
+            amount=float(payload["amount"]),
+            reason=payload.get("reason", ""),
+        )
+        self._seen_receipt_ids.add(receipt_id)
+        self.receipts.append(receipt)
+
+    def _credit_with_receipt(self, account: str, amount: float, reason: str, task: str):
+        receipt = self.create_signed_receipt(
+            account=account,
+            amount=amount,
+            reason=reason,
+            task=task,
+        )
+        self.apply_signed_receipt(receipt)
+
     def distribute_royalty(
         self,
         task: str,
@@ -146,15 +224,31 @@ class OmniTokenLedger:
 
         # Credit accounts
         discovery_acct = discovery_account or node_id
-        self.credit(discovery_acct, discovery_amount, f"Discovery: {task}")
+        self._credit_with_receipt(
+            discovery_acct,
+            discovery_amount,
+            f"Discovery: {task}",
+            task,
+        )
         if node_amount > 0:
-            self.credit(node_id, node_amount, f"Compute: {task}")
-        self.credit(dev_account, dev_amount, f"Dev fund: {task}")
+            self._credit_with_receipt(
+                node_id,
+                node_amount,
+                f"Compute: {task}",
+                task,
+            )
+        self._credit_with_receipt(
+            dev_account,
+            dev_amount,
+            f"Dev fund: {task}",
+            task,
+        )
         if unclaimed_reserve > 0:
-            self.credit(
+            self._credit_with_receipt(
                 unclaimed_reserve_account,
                 unclaimed_reserve,
                 f"Unclaimed reserve: {task}",
+                task,
             )
 
         self.total_distributed = round(
@@ -181,6 +275,7 @@ class OmniTokenLedger:
             "total_accounts": len(self.balances),
             "total_distributed": self.total_distributed,
             "total_transactions": len(self.transactions),
+            "total_receipts": len(self.receipts),
         }
 
     def get_transactions(

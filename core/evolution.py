@@ -96,11 +96,28 @@ class AgentGenome:
             "genome_id": self.genome_id,
             "role": self.role,
             "generation": self.generation,
+            "prompt_template": self.prompt_template,
             "temperature": self.temperature,
             "fitness": self.fitness,
             "skills": self.skills,
             "parent_id": self.parent_id,
+            "created_at": self.created_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AgentGenome":
+        genome = cls(
+            role=data.get("role", "researcher"),
+            prompt_template=data.get("prompt_template", ""),
+            temperature=data.get("temperature", 0.7),
+            skills=data.get("skills") or [],
+            parent_id=data.get("parent_id"),
+        )
+        genome.genome_id = data.get("genome_id", genome.genome_id)
+        genome.generation = int(data.get("generation", genome.generation))
+        genome.fitness = float(data.get("fitness", genome.fitness))
+        genome.created_at = float(data.get("created_at", genome.created_at))
+        return genome
 
 
 class EvolutionEngine:
@@ -122,6 +139,7 @@ class EvolutionEngine:
         self.generation = 0
         self.population: list[AgentGenome] = []
         self.history: list[dict] = []
+        self.lineage: list[dict] = []
 
     def initialize_population(self, roles: Optional[list[str]] = None):
         """Create the initial population of agent genomes."""
@@ -132,6 +150,8 @@ class EvolutionEngine:
             genome = AgentGenome(role=role)
             genome.generation = 0
             self.population.append(genome)
+        self.generation = 0
+        self._record_lineage(note="init")
         print(f"   [GEN] Population initialized: {self.population_size} genomes")
 
     def evaluate_fitness(self, genome: AgentGenome, score: float):
@@ -188,6 +208,7 @@ class EvolutionEngine:
 
         self.population = new_population
         self.generation += 1
+        self._record_lineage(note="evolve")
 
         avg_fitness = (
             sum(g.fitness for g in self.population) / len(self.population)
@@ -200,6 +221,46 @@ class EvolutionEngine:
             f"Avg fitness: {avg_fitness:.3f}"
         )
         return self.population
+
+    def _record_lineage(self, note: str):
+        self.lineage.append({
+            "generation": self.generation,
+            "timestamp": time.time(),
+            "note": note,
+            "population": [genome.to_dict() for genome in self.population],
+        })
+
+    def rollback_generation(self, target_generation: Optional[int] = None) -> bool:
+        """Rollback population to a previous generation snapshot."""
+        if not self.lineage:
+            return False
+
+        if target_generation is None:
+            if self.generation <= 0:
+                return False
+            target_generation = self.generation - 1
+
+        snapshot = next(
+            (
+                item
+                for item in reversed(self.lineage)
+                if item.get("generation") == target_generation
+            ),
+            None,
+        )
+        if snapshot is None:
+            return False
+
+        self.population = [
+            AgentGenome.from_dict(genome_data)
+            for genome_data in snapshot.get("population", [])
+        ]
+        self.generation = target_generation
+        self.lineage = [
+            item for item in self.lineage if item.get("generation", -1) <= target_generation
+        ]
+        print(f"   [GEN] Rolled back to generation {self.generation}")
+        return True
 
     def get_best(self) -> Optional[AgentGenome]:
         """Return the genome with highest fitness."""
@@ -217,4 +278,5 @@ class EvolutionEngine:
             "best_fitness": max(fitnesses),
             "worst_fitness": min(fitnesses),
             "total_tasks": len(self.history),
+            "lineage_snapshots": len(self.lineage),
         }

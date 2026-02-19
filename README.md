@@ -28,6 +28,21 @@ Note: Real LLM integration is planned for v1.1.
 The IPFS pubsub adapter uses `ipfshttpclient`. This client currently works more stably with older daemon series
 (verification test performed with go-ipfs v0.7.x).
 
+## v0.2 Safety Foundations
+
+- Deny-by-default policy engine for task/action gating.
+- Per-node sandbox rooted under `.omni_sandbox/<node_id>`.
+- Telemetry logging for policy decisions and swarm outcomes.
+- Signed token receipts with replay protection.
+- Deterministic settlement snapshot support.
+
+## Pilot Operations Docs
+
+- Metrics: `docs/observability/metrics.md`
+- Runbooks: `docs/runbooks/`
+- Launch plan: `docs/launch/first-1000-cohort.md`
+- Governance: `docs/governance/`
+
 ## Claim Link for the First 1000 Nodes
 
 - Claim portal (testnet dummy): `https://claim.omniswarm.local/testnet/v0.1`

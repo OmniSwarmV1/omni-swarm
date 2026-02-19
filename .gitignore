@@ -66,3 +66,4 @@ Thumbs.db
 node_data/
 swarm_cache/
 .omni_token_db
+.omni_sandbox/

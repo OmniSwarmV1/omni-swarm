@@ -127,3 +127,19 @@ class TestEvolutionEngine:
         assert stats["best_fitness"] == 0.8
         assert stats["worst_fitness"] == 0.2
         assert abs(stats["avg_fitness"] - 0.5) < 0.01
+
+    def test_rollback_generation_restores_previous_snapshot(self):
+        engine = EvolutionEngine(population_size=4)
+        engine.initialize_population()
+        for genome in engine.population:
+            genome.fitness = 0.6
+        engine.evolve()
+        for genome in engine.population:
+            genome.fitness = 0.7
+        engine.evolve()
+        assert engine.generation == 2
+
+        rolled_back = engine.rollback_generation(1)
+        assert rolled_back is True
+        assert engine.generation == 1
+        assert len(engine.population) == 4
