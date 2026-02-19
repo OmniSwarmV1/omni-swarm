@@ -67,3 +67,4 @@ node_data/
 swarm_cache/
 .omni_token_db
 .omni_sandbox/
+go_no_go_report.json

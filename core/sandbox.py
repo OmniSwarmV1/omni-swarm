@@ -25,6 +25,13 @@ class OmniSandbox:
         self.root_path.mkdir(parents=True, exist_ok=True)
 
     def resolve_path(self, relative_path: str | Path) -> Path:
+        raw_value = str(relative_path)
+        if raw_value.startswith("\\\\"):
+            raise SandboxViolationError("UNC paths are not allowed in sandbox operations.")
+        # Block drive-qualified or protocol-like paths regardless of platform.
+        if ":" in raw_value.split("\\")[0].split("/")[0]:
+            raise SandboxViolationError("Drive-qualified paths are not allowed in sandbox operations.")
+
         rel = Path(relative_path)
         if rel.is_absolute():
             raise SandboxViolationError("Absolute paths are not allowed in sandbox operations.")

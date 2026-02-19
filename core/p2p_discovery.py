@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Callable, Optional, Protocol
 
+from core.p2p_health import P2PHealthMonitor
+
 try:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -116,6 +118,15 @@ class IPFSPubSubAdapter:
             raise RuntimeError("IPFS client is not connected")
         return self.client.pubsub.subscribe(self.topic)
 
+    def health_check(self) -> float:
+        """Return a cheap IPFS RTT-like latency in milliseconds."""
+        if self.client is None:
+            raise RuntimeError("IPFS client is not connected")
+        started = time.perf_counter()
+        self.client.id()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        return elapsed_ms
+
 
 class RendezvousBackend(Protocol):
     def register(
@@ -156,6 +167,9 @@ class P2PDiscovery:
         peer_timeout: float = 10.0,
         enable_ipfs: Optional[bool] = None,
         rendezvous: Optional[RendezvousBackend] = None,
+        ipfs_health_check_interval: float = 5.0,
+        ipfs_latency_warn_ms: float = 1500.0,
+        ipfs_failure_threshold: int = 2,
     ):
         self.node_id = node_id
         self.topic = topic
@@ -163,6 +177,7 @@ class P2PDiscovery:
         self.heartbeat_interval = heartbeat_interval
         self.peer_timeout = peer_timeout
         self.rendezvous = rendezvous
+        self.ipfs_health_check_interval = max(1.0, float(ipfs_health_check_interval))
         if enable_ipfs is None:
             backend = os.environ.get("OMNI_P2P_BACKEND", "ipfs").lower()
             self.enable_ipfs = backend == "ipfs"
@@ -195,10 +210,15 @@ class P2PDiscovery:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._inbox_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
         self._inbox_queue: asyncio.Queue = asyncio.Queue()
         self._subscriber_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._ipfs = IPFSPubSubAdapter(api_addr=self.ipfs_api_addr, topic=self.topic)
+        self._health_monitor = P2PHealthMonitor(
+            latency_warn_ms=ipfs_latency_warn_ms,
+            failure_threshold=max(1, int(ipfs_failure_threshold)),
+        )
 
     async def start(self):
         self.running = True
@@ -215,6 +235,8 @@ class P2PDiscovery:
 
         self._inbox_task = asyncio.create_task(self._inbox_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        if self.enable_ipfs:
+            self._health_task = asyncio.create_task(self._health_loop())
         await asyncio.sleep(0.1)
         print(
             f"   [P2P] Discovery active | Node: {self.node_id} | "
@@ -233,6 +255,10 @@ class P2PDiscovery:
             self._inbox_task.cancel()
             await asyncio.gather(self._inbox_task, return_exceptions=True)
 
+        if self._health_task:
+            self._health_task.cancel()
+            await asyncio.gather(self._health_task, return_exceptions=True)
+
         if self._subscriber_thread and self._subscriber_thread.is_alive():
             self._ipfs.close()
             self._subscriber_thread.join(timeout=1.0)
@@ -242,10 +268,14 @@ class P2PDiscovery:
         print(f"   [P2P] Discovery stopped | Node: {self.node_id}")
 
     async def _start_ipfs_backend(self):
+        if self._ipfs_connected:
+            return
         try:
             await asyncio.to_thread(self._ipfs.connect)
             self._ipfs_connected = True
             self._stop_event.clear()
+            if self._subscriber_thread and self._subscriber_thread.is_alive():
+                return
             self._subscriber_thread = threading.Thread(
                 target=self._subscription_worker,
                 name=f"ipfs-sub-{self.node_id}",
@@ -254,6 +284,7 @@ class P2PDiscovery:
             self._subscriber_thread.start()
         except Exception as exc:
             self._ipfs_connected = False
+            self._health_monitor.record_failure(exc)
             print(f"   [WARN] IPFS backend unavailable ({exc}). Falling back to local.")
 
     def _subscription_worker(self):
@@ -284,6 +315,40 @@ class P2PDiscovery:
             self._sync_with_rendezvous()
             envelope = self.build_signed_heartbeat()
             await self.broadcast(envelope)
+
+    async def _health_loop(self):
+        while self.running:
+            await asyncio.sleep(self.ipfs_health_check_interval)
+            await self.check_ipfs_health_once()
+
+    async def check_ipfs_health_once(self) -> bool:
+        """Run one IPFS health probe and auto-degrade/recover transport."""
+        if not self.enable_ipfs:
+            return False
+
+        if not self._ipfs_connected:
+            await self._start_ipfs_backend()
+            return self._ipfs_connected
+
+        try:
+            latency_ms = await asyncio.to_thread(self._ipfs.health_check)
+            self._health_monitor.record_success(latency_ms)
+            if latency_ms > self._health_monitor.latency_warn_ms:
+                print(
+                    "   [WARN] IPFS health latency high "
+                    f"({latency_ms:.1f} ms) on node {self.node_id}."
+                )
+            return True
+        except Exception as exc:
+            self._health_monitor.record_failure(exc)
+            if self._health_monitor.degraded:
+                self._ipfs.close()
+                self._ipfs_connected = False
+                print(
+                    "   [WARN] IPFS health degraded. "
+                    f"Switching node {self.node_id} to local fallback."
+                )
+            return False
 
     def _sync_with_rendezvous(self):
         if self.rendezvous is None:
@@ -460,6 +525,10 @@ class P2PDiscovery:
                 await asyncio.to_thread(self._ipfs.publish, message)
                 return
             except Exception as exc:
+                self._health_monitor.record_failure(exc)
+                if self._health_monitor.degraded:
+                    self._ipfs.close()
+                    self._ipfs_connected = False
                 print(f"   [WARN] IPFS publish failed ({exc}). Falling back to local.")
 
         # Local fallback path already emitted local handlers above.
@@ -482,4 +551,5 @@ class P2PDiscovery:
             "signature_failures": self._signature_failures,
             "crypto_backend": self.crypto_backend,
             "rendezvous_enabled": self.rendezvous is not None,
+            "ipfs_health": self._health_monitor.to_dict(),
         }

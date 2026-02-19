@@ -35,3 +35,13 @@ class TestOmniSandbox:
         sandbox = OmniSandbox(node_id="node_1", base_dir=tmp_path, allowed_hosts={"localhost"})
         assert sandbox.is_host_allowed("localhost") is True
         assert sandbox.is_host_allowed("example.com") is False
+
+    def test_windows_style_drive_path_blocked(self, tmp_path: Path):
+        sandbox = OmniSandbox(node_id="node_1", base_dir=tmp_path)
+        with pytest.raises(SandboxViolationError):
+            sandbox.write_text(r"C:\Windows\System32\drivers\etc\hosts", "nope")
+
+    def test_unc_path_blocked(self, tmp_path: Path):
+        sandbox = OmniSandbox(node_id="node_1", base_dir=tmp_path)
+        with pytest.raises(SandboxViolationError):
+            sandbox.write_text(r"\\server\share\malicious.txt", "nope")

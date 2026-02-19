@@ -125,3 +125,66 @@ class TestP2PMessaging:
         assert stats["node_id"] == "node_001"
         assert stats["running"] is False
         assert stats["messages_sent"] == 0
+
+
+class _FakeIPFSAdapter:
+    def __init__(self, latency_ms: float = 10.0, fail: bool = False):
+        self.latency_ms = latency_ms
+        self.fail = fail
+
+    def health_check(self):
+        if self.fail:
+            raise RuntimeError("ipfs daemon unreachable")
+        return self.latency_ms
+
+    def close(self):
+        return None
+
+    def connect(self):
+        return None
+
+    def publish(self, payload):
+        if self.fail:
+            raise RuntimeError("publish failed")
+        return None
+
+    def subscribe(self):
+        return []
+
+
+class TestP2PHealth:
+    @pytest.mark.asyncio
+    async def test_health_check_records_latency_warning(self):
+        p2p = P2PDiscovery(
+            node_id="node_health_warn",
+            enable_ipfs=True,
+            ipfs_latency_warn_ms=50.0,
+        )
+        p2p._ipfs_connected = True
+        p2p._ipfs = _FakeIPFSAdapter(latency_ms=120.0, fail=False)
+
+        ok = await p2p.check_ipfs_health_once()
+        stats = p2p.get_stats()
+
+        assert ok is True
+        assert stats["ipfs_health"]["latency_warn_count"] >= 1
+        assert stats["ipfs_health"]["degraded"] is False
+
+    @pytest.mark.asyncio
+    async def test_health_check_degrades_after_consecutive_failures(self):
+        p2p = P2PDiscovery(
+            node_id="node_health_degrade",
+            enable_ipfs=True,
+            ipfs_failure_threshold=2,
+        )
+        p2p._ipfs_connected = True
+        p2p._ipfs = _FakeIPFSAdapter(fail=True)
+
+        first = await p2p.check_ipfs_health_once()
+        second = await p2p.check_ipfs_health_once()
+        stats = p2p.get_stats()
+
+        assert first is False
+        assert second is False
+        assert stats["ipfs_health"]["degraded"] is True
+        assert p2p._ipfs_connected is False
