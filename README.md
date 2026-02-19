@@ -33,5 +33,3 @@ The IPFS pubsub adapter uses `ipfshttpclient`. This client currently works more 
 - Claim portal (testnet dummy): `https://claim.omniswarm.local/testnet/v0.1`
 - Snapshot file: `token/airdrop_snapshot.json`
 - Claim flow documentation: `token/claim_flow.md`
-
-Translated with DeepL.com (free version)
