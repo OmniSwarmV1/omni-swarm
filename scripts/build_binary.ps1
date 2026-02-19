@@ -1,10 +1,10 @@
 # Build OmniSwarm standalone binary via PyInstaller (Windows)
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$OutputName = "omni-swarm-node"
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 Write-Output "[INFO] Installing build dependencies..."
 python -m pip install --upgrade pip
