@@ -23,6 +23,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual environments
 .env
@@ -30,6 +31,21 @@ wheels/
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Type / lint caches
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
 
 # IDE
 .vscode/
@@ -40,6 +56,10 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# PyInstaller
+*.spec
+*.manifest
 
 # Project specific
 *.log
