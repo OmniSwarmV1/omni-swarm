@@ -1,35 +1,37 @@
 # OmniSwarm
 
-**Ilk AI kolektif super-zeka.**  
-18 Subat 2026
+**The first AI collective super-intelligence.**  
+February 18, 2026
 
-Her cihazda calisan yerel node'lar -> dinamik swarm'lar -> kesif simulasyonu -> royalty dagitimi.
+Local nodes running on every device -> dynamic swarms -> exploration simulation -> royalty distribution.
 
-Hedef: 2026 sonu 1 milyon node, haftada 1 cigir acan kesif.
+Goal: 1 million nodes by the end of 2026, one new discovery per week.
 
-## Hizli Baslangic
+## Quick Start
 
 ```bash
 pip install -r requirements.txt
 python -m core.node
 ```
 
-Ilk node calisinca otomatik $OMNI airdrop havuzuna katilir.
+When the first node runs, it automatically joins the $OMNI airdrop pool.
 
-## Runtime Modlari
+## Runtime Modes
 
-- `mock` (varsayilan): Tamamen yerel simulasyon.
-- `simulated_graph`: LangGraph tabanli simulasyon akisi.
+- `mock` (default): Fully local simulation.
+- `simulated_graph`: LangGraph-based simulation flow.
 
-Not: Gercek LLM entegrasyonu v1.1'de planlaniyor (Opus 4.6 + tool calling).
+Note: Real LLM integration is planned for v1.1.
 
-## P2P Notu
+## P2P Note
 
-IPFS pubsub adapter `ipfshttpclient` kullanir. Bu client su an eski daemon serileri ile daha stabil calisir
-(dogrulama testi go-ipfs v0.7.x ile yapildi).
+The IPFS pubsub adapter uses `ipfshttpclient`. This client currently works more stably with older daemon series
+(verification test performed with go-ipfs v0.7.x).
 
-## Ilk 1000 Node Icin Claim Linki
+## Claim Link for the First 1000 Nodes
 
 - Claim portal (testnet dummy): `https://claim.omniswarm.local/testnet/v0.1`
-- Snapshot dosyasi: `token/airdrop_snapshot.json`
-- Claim flow dokumani: `token/claim_flow.md`
+- Snapshot file: `token/airdrop_snapshot.json`
+- Claim flow documentation: `token/claim_flow.md`
+
+Translated with DeepL.com (free version)
