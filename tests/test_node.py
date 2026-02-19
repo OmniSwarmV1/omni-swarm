@@ -60,6 +60,12 @@ class TestOmniNodeLifecycle:
         await node.stop()
         assert node.active is False
 
+    @pytest.mark.asyncio
+    async def test_start_initializes_evolution_population(self):
+        node = OmniNode(device_id="evo_init_test")
+        await node.start()
+        assert len(node.evolution.population) > 0
+
 
 class TestOmniNodeSwarm:
     """Test mock swarm creation and execution."""
@@ -94,3 +100,11 @@ class TestOmniNodeSwarm:
         # Assert exact keys present (deterministic structure)
         expected_keys = {"task", "swarm_result", "royalty_pool", "node_reward", "status"}
         assert set(result.keys()) == expected_keys
+
+    @pytest.mark.asyncio
+    async def test_swarm_advances_evolution_generation(self):
+        node = OmniNode(device_id="evo_generation_test", compute_share=0.5)
+        await node.start()
+        initial_generation = node.evolution.generation
+        await node.create_swarm("Generation task")
+        assert node.evolution.generation == initial_generation + 1

@@ -3,7 +3,9 @@
 #
 # Modes:
 #   mock (default) - No API key needed, simulated pipeline
-#   real           - Set OMNI_MODE=real + OPENAI_API_KEY env vars
+#   simulated_graph - LangGraph pipeline simulation
+#
+# Real LLM integration is planned for v1.1 (Opus 4.6 + tool calling).
 
 import asyncio
 import os
@@ -39,6 +41,8 @@ class OmniNode:
         self.compute_share = max(0.0, min(1.0, compute_share))
         self.active = False
         self.mode = os.environ.get("OMNI_MODE", "mock").lower()
+        if self.mode == "real":
+            self.mode = "simulated_graph"
 
         # Sub-engines
         self.p2p = P2PDiscovery(self.node_id)
@@ -46,24 +50,23 @@ class OmniNode:
         self.evolution = EvolutionEngine()
         self.ledger = OmniTokenLedger()
 
-        # Lazy real-mode imports (only when needed)
+        # Lazy simulated-graph imports (only when needed)
         self._langgraph_loaded = False
 
         print(f"[OK] OmniSwarm Node baslatildi -> ID: {self.node_id}")
         print(f"   Mode: {self.mode} | Compute share: {self.compute_share:.0%}")
 
-    def _load_real_mode(self):
-        """Lazy-load LangGraph imports for real mode. Fails gracefully."""
+    def _load_simulated_graph_mode(self):
+        """Lazy-load LangGraph imports for simulated graph mode."""
         if self._langgraph_loaded:
             return True
         try:
             from langgraph.graph import StateGraph, END  # noqa: F401
-            from langgraph.prebuilt import create_react_agent  # noqa: F401
 
             self._langgraph_loaded = True
             return True
         except ImportError as exc:
-            print(f"[WARN] Real mode requires langgraph: {exc}")
+            print(f"[WARN] simulated_graph mode requires langgraph: {exc}")
             print("   Falling back to mock mode.")
             self.mode = "mock"
             return False
@@ -73,6 +76,10 @@ class OmniNode:
         self.active = True
         print("[NET] P2P discovery basladi... (IPFS + Tor simule)")
         await self.p2p.start()
+        if not self.evolution.population:
+            self.evolution.initialize_population(
+                roles=["researcher", "coder", "simulator"]
+            )
         print("[LINK] Swarm agina baglanildi. Komut bekleniyor.")
 
     async def stop(self):
@@ -85,20 +92,21 @@ class OmniNode:
         """Create and execute a swarm for the given task.
 
         In mock mode, runs a simulated research → code → simulate pipeline.
-        In real mode, uses LangGraph agents with an LLM backend.
+        In simulated_graph mode, runs a LangGraph pipeline simulation.
         """
         if not self.active:
             raise RuntimeError("Node is not active. Call start() first.")
 
         print(f"[SWARM] Yeni swarm olusturuluyor: {task}")
 
-        if self.mode == "real":
-            result = await self._run_real_swarm(task)
+        if self.mode == "simulated_graph":
+            result = await self._run_simulated_graph_swarm(task)
         else:
             result = await self._run_mock_swarm(task)
 
         # Evolution: evaluate and improve agents
         self.evolution.record_result(task, result)
+        self._run_evolution_cycle(task, result)
 
         # Royalty distribution
         royalty = self.ledger.distribute_royalty(
@@ -118,6 +126,49 @@ class OmniNode:
         print("[DONE] Swarm tamamlandi! Royalty hazir.")
         return discovery
 
+    def _score_swarm_result(self, task: str, result: str) -> float:
+        """Derive a bounded fitness score for one completed swarm."""
+        result_text = (result or "").lower()
+        task_text = (task or "").lower()
+
+        score = 0.40
+        if "completed" in result_text:
+            score += 0.20
+        if "simulated discovery" in result_text:
+            score += 0.15
+        if any(word in task_text for word in ["optimiz", "kesfet", "patent", "discover"]):
+            score += 0.10
+
+        return max(0.0, min(1.0, round(score, 3)))
+
+    def _run_evolution_cycle(self, task: str, result: str):
+        """Evaluate current genomes and evolve to next generation."""
+        if not self.evolution.population:
+            self.evolution.initialize_population(
+                roles=["researcher", "coder", "simulator"]
+            )
+
+        base_score = self._score_swarm_result(task, result)
+        role_bonus = {
+            "researcher": 0.05,
+            "coder": 0.03,
+            "simulator": 0.02,
+        }
+
+        for genome in self.evolution.population:
+            score = base_score + role_bonus.get(genome.role, 0.0)
+            self.evolution.evaluate_fitness(genome, score)
+
+        self.evolution.evolve()
+        best = self.evolution.get_best()
+        if best is not None:
+            print(
+                "   [EVO] Generation "
+                f"{self.evolution.generation} | "
+                f"Best role: {best.role} | "
+                f"Fitness: {best.fitness:.3f}"
+            )
+
     async def _run_mock_swarm(self, task: str) -> str:
         """Simulated swarm pipeline – no API key required."""
         agents = ["researcher", "coder", "simulator"]
@@ -136,18 +187,12 @@ class OmniNode:
             f"Simulated discovery generated."
         )
 
-    async def _run_real_swarm(self, task: str) -> str:
-        """Real LangGraph-based swarm with LLM agents."""
-        if not self._load_real_mode():
+    async def _run_simulated_graph_swarm(self, task: str) -> str:
+        """LangGraph-based swarm simulation (no real LLM tool-calling yet)."""
+        if not self._load_simulated_graph_mode():
             return await self._run_mock_swarm(task)
 
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            print("[WARN] OPENAI_API_KEY not set. Falling back to mock mode.")
-            self.mode = "mock"
-            return await self._run_mock_swarm(task)
-
-        # Real LangGraph execution
+        # Simulated graph execution (real LLM integration planned for v1.1).
         from langgraph.graph import StateGraph, END
 
         graph = StateGraph(SwarmState)
@@ -196,7 +241,7 @@ async def main():
     node = OmniNode(device_id="kadir_test_001", compute_share=0.4)
     await node.start()
 
-    # Test task – real discovery simulation
+    # Test task - discovery simulation
     result = await node.create_swarm(
         "Yeni 600Wh/kg batarya kimyası keşfet ve patent öner"
     )

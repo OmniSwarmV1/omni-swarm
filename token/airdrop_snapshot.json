@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "name": "OmniSwarm First 1000 Nodes Snapshot (Dummy)",
+    "network": "solana-testnet-dummy",
+    "created_at_utc": "2026-02-19T22:41:00Z",
+    "version": "v0.1"
+  },
+  "claims": {
+    "node_wallet_a_demo": 1500.0,
+    "node_wallet_b_demo": 1200.0,
+    "node_wallet_c_demo": 1000.0
+  }
+}

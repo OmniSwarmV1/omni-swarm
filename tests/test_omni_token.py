@@ -10,6 +10,16 @@ from omni_token.omni_token import (
 )
 
 
+def test_legacy_import_alias_still_works():
+    from omni_token.omni_token import OmniTokenLedger as LegacyLedger
+    assert LegacyLedger is OmniTokenLedger
+
+
+def test_moved_token_module_file_exists():
+    import pathlib
+    assert pathlib.Path("token/omni_token.py").exists()
+
+
 class TestTokenShares:
     """Validate the royalty split constants."""
 
@@ -97,6 +107,8 @@ class TestRoyaltyDistribution:
         assert result["discovery_reward"] == 600.0
         assert result["node_reward"] == 200.0
         assert result["dev_fund"] == 200.0
+        assert result["unclaimed_reserve"] == 0.0
+        assert result["credited_total"] == 1000.0
 
     def test_partial_compute_share(self):
         ledger = OmniTokenLedger()
@@ -107,6 +119,7 @@ class TestRoyaltyDistribution:
             compute_share=0.5,
         )
         assert result["node_reward"] == 100.0  # 20% * 50%
+        assert result["unclaimed_reserve"] == 100.0
 
     def test_zero_compute_share(self):
         ledger = OmniTokenLedger()
@@ -120,6 +133,25 @@ class TestRoyaltyDistribution:
         # Discovery and dev fund still credited
         assert result["discovery_reward"] == 600.0
         assert result["dev_fund"] == 200.0
+        assert result["unclaimed_reserve"] == 200.0
+
+    def test_token_conservation_invariant(self):
+        ledger = OmniTokenLedger()
+        result = ledger.distribute_royalty(
+            task="conservation",
+            total_amount=1250.0,
+            node_id="node_001",
+            compute_share=0.4,
+        )
+
+        credited_total = (
+            result["discovery_reward"] + result["node_reward"] + result["dev_fund"]
+        )
+        unclaimed_reserve = result["unclaimed_reserve"]
+        total_amount = result["total"]
+        assert credited_total + unclaimed_reserve == total_amount, (
+            "Token conservation broken!"
+        )
 
     def test_negative_amount_raises(self):
         ledger = OmniTokenLedger()

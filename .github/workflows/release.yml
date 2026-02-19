@@ -1,0 +1,92 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v0.1"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (must be v0.1)"
+        required: true
+        default: "v0.1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build binary (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          chmod +x scripts/build_binary.sh
+          ./scripts/build_binary.sh omni-swarm-node
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/build_binary.ps1 -OutputName "omni-swarm-node"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-swarm-node-${{ runner.os }}
+          path: |
+            dist/omni-swarm-node
+            dist/omni-swarm-node.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Resolve tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ "${TAG}" != "v0.1" ]]; then
+            echo "Only v0.1 is allowed by this workflow."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: OmniSwarm ${{ steps.release_tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/omni-swarm-node
+            artifacts/**/omni-swarm-node.exe

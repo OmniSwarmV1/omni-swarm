@@ -3,3 +3,4 @@ langchain-openai
 ipfshttpclient
 asyncio
 torch
+cryptography>=42.0.0

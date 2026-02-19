@@ -35,6 +35,22 @@ class TestPeer:
 class TestP2PDiscovery:
     """Test P2P discovery service."""
 
+    def test_keypair_generated(self):
+        p2p = P2PDiscovery(node_id="node_001")
+        assert isinstance(p2p.public_key_b64, str)
+        assert len(p2p.public_key_b64) > 0
+
+    def test_signed_heartbeat_verifies(self):
+        p2p = P2PDiscovery(node_id="node_001")
+        envelope = p2p.build_signed_heartbeat()
+        assert p2p._verify_envelope(envelope) is True
+
+    def test_tampered_heartbeat_fails(self):
+        p2p = P2PDiscovery(node_id="node_001")
+        envelope = p2p.build_signed_heartbeat()
+        envelope["payload"]["node_id"] = "node_x_tampered"
+        assert p2p._verify_envelope(envelope) is False
+
     @pytest.mark.asyncio
     async def test_start_registers_self(self):
         p2p = P2PDiscovery(node_id="node_001")
