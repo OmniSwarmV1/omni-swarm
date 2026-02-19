@@ -16,10 +16,12 @@ CRITICAL_TEST_TARGETS = [
     "tests/test_p2p_rendezvous.py",
     "tests/test_fitness.py",
     "tests/test_evolution.py",
+    "tests/test_evolution_consensus.py",
     "tests/test_omni_token.py",
     "tests/test_settlement_integrity.py",
     "tests/test_health.py",
     "tests/test_node.py",
+    "tests/test_sybil_guard.py",
     "tests/test_multi_node_integration.py",
 ]
 

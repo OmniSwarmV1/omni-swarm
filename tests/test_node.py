@@ -98,7 +98,14 @@ class TestOmniNodeSwarm:
         await node.start()
         result = await node.create_swarm("Deterministic task")
         # Assert exact keys present (deterministic structure)
-        expected_keys = {"task", "swarm_result", "royalty_pool", "node_reward", "status"}
+        expected_keys = {
+            "task",
+            "swarm_result",
+            "royalty_pool",
+            "node_reward",
+            "status",
+            "verification_status",
+        }
         assert set(result.keys()) == expected_keys
 
     @pytest.mark.asyncio
@@ -129,3 +136,46 @@ class TestOmniNodeSafety:
         with pytest.raises(RuntimeError, match="Kill switch"):
             await node.create_swarm("Safe chemistry optimization task")
         await node.stop()
+
+    @pytest.mark.asyncio
+    async def test_sybil_guard_blocks_duplicate_task(self):
+        node = OmniNode(device_id="sybil_dup_test")
+        await node.start()
+        await node.create_swarm("Unique chemistry task")
+        with pytest.raises(PermissionError, match="Duplicate task"):
+            await node.create_swarm("Unique chemistry task")
+        await node.stop()
+
+
+class TestOmniNodeVerification:
+    @pytest.mark.asyncio
+    async def test_async_verification_report_updates(self):
+        node = OmniNode(device_id="verification_report_test", compute_share=0.5)
+        await node.start()
+        await node.create_swarm("Yeni batarya kimyasi kesfet")
+        await node.wait_for_verifications(timeout=2.0)
+        report = node.verification_report()
+        await node.stop()
+
+        assert report["total"] >= 1
+        assert report["pending"] == 0
+
+    @pytest.mark.asyncio
+    async def test_failed_verification_applies_penalty_and_rollback(self):
+        node = OmniNode(device_id="verification_fail_test", compute_share=0.5)
+        await node.start()
+
+        async def _bad_result(task: str) -> str:
+            return "No result. Failed with unknown error."
+
+        node._run_mock_swarm = _bad_result  # type: ignore[assignment]
+
+        await node.create_swarm("Yeni batarya kimyasi kesfet")
+        await node.wait_for_verifications(timeout=2.0)
+        report = node.verification_report()
+        reserve_balance = node.ledger.get_balance("omni_unclaimed_reserve")
+        await node.stop()
+
+        assert report["failed"] >= 1
+        assert reserve_balance > 0
+        assert node.evolution.generation == 0

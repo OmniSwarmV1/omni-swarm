@@ -38,3 +38,25 @@ class TestNodeHealth:
 
         assert snapshot["policy_blocks"] >= 1
         assert snapshot["status"] == "degraded"
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_and_attestation_export(self):
+        node = OmniNode(device_id="health_diag_node")
+        await node.start()
+        await node.create_swarm("Yeni batarya kimyasi kesfet")
+        await node.wait_for_verifications(timeout=2.0)
+
+        attestation_path = node.export_attestation()
+        diagnostics_path = node.export_diagnostics()
+        await node.stop()
+
+        import json
+        from pathlib import Path
+
+        attestation = json.loads(Path(attestation_path).read_text(encoding="utf-8"))
+        diagnostics = json.loads(Path(diagnostics_path).read_text(encoding="utf-8"))
+
+        assert attestation["node_id"] == "health_diag_node"
+        assert "fingerprint" in attestation
+        assert "health" in diagnostics
+        assert "verification" in diagnostics

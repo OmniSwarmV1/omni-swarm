@@ -12,6 +12,7 @@ import os
 import uuid
 from typing import TypedDict, List, Optional
 
+from core.attestation import build_attestation_payload, write_json_document
 from core.swarm_engine import SwarmEngine
 from core.p2p_discovery import P2PDiscovery
 from core.evolution import EvolutionEngine
@@ -19,8 +20,10 @@ from core.fitness import FitnessScorer
 from core.health import build_health_snapshot
 from core.policy_engine import PolicyEngine
 from core.sandbox import OmniSandbox
+from core.sybil_guard import NodeSybilGuard
 from core.telemetry import TelemetryCollector
-from omni_token.omni_token import OmniTokenLedger
+from core.verification import ConsensusVerifier, VerificationResult
+from omni_token.omni_token import OmniTokenLedger, UNCLAIMED_RESERVE_ACCOUNT
 
 
 class SwarmState(TypedDict):
@@ -60,8 +63,19 @@ class OmniNode:
         self.swarm_engine = SwarmEngine(self.node_id)
         self.evolution = EvolutionEngine()
         self.fitness_scorer = FitnessScorer()
+        self.verifier = ConsensusVerifier()
         self.ledger = OmniTokenLedger()
+        self.sybil_guard = NodeSybilGuard(
+            node_id=self.node_id,
+            min_task_interval_sec=float(os.environ.get("OMNI_MIN_TASK_INTERVAL_SEC", "0")),
+            duplicate_window_sec=float(os.environ.get("OMNI_DUPLICATE_WINDOW_SEC", "15")),
+            min_compute_share=float(os.environ.get("OMNI_MIN_COMPUTE_SHARE", "0")),
+        )
         self.policy_block_count = 0
+        self.sybil_block_count = 0
+        self.verification_fail_count = 0
+        self._verification_tasks: set[asyncio.Task] = set()
+        self._verification_by_id: dict[str, dict] = {}
 
         # Lazy simulated-graph imports (only when needed)
         self._langgraph_loaded = False
@@ -99,6 +113,7 @@ class OmniNode:
     async def stop(self):
         """Gracefully shut down the node."""
         self.active = False
+        await self.wait_for_verifications()
         await self.p2p.stop()
         self.telemetry.emit("node_stop", {"active": self.active})
         print(f"[STOP] Node {self.node_id} durduruldu.")
@@ -113,6 +128,23 @@ class OmniNode:
             raise RuntimeError("Node is not active. Call start() first.")
         if self.kill_switch_enabled:
             raise RuntimeError("Kill switch is enabled. Swarm creation is blocked.")
+
+        sybil_decision = self.sybil_guard.evaluate(task=task, compute_share=self.compute_share)
+        self.telemetry.emit(
+            "sybil_decision",
+            {
+                "allowed": sybil_decision.allowed,
+                "reason": sybil_decision.reason,
+            },
+        )
+        if not sybil_decision.allowed:
+            self.sybil_block_count += 1
+            self.telemetry.emit(
+                "sybil_blocked",
+                {"task": task, "reason": sybil_decision.reason},
+                level="WARN",
+            )
+            raise PermissionError(sybil_decision.reason)
 
         decision = self.policy.evaluate(action="create_swarm", task=task)
         self.telemetry.emit(
@@ -163,6 +195,19 @@ class OmniNode:
             "node_reward": royalty["node_reward"],
             "status": "COMPLETED",
         }
+
+        verification_task = asyncio.create_task(
+            self._run_async_verification(
+                task=task,
+                result=result,
+                node_reward=royalty["node_reward"],
+                generation_after_evolve=self.evolution.generation,
+            )
+        )
+        self._verification_tasks.add(verification_task)
+        verification_task.add_done_callback(self._verification_tasks.discard)
+        discovery["verification_status"] = "PENDING"
+
         self.sandbox.write_text(
             f"results/{uuid.uuid4().hex}.json",
             str(discovery),
@@ -178,6 +223,127 @@ class OmniNode:
         print("[DONE] Swarm tamamlandi! Royalty hazir.")
         return discovery
 
+    async def _run_async_verification(
+        self,
+        task: str,
+        result: str,
+        node_reward: float,
+        generation_after_evolve: int,
+    ):
+        verification = await self.verifier.verify(task=task, result=result)
+        self._verification_by_id[verification.verification_id] = verification.to_dict()
+        self.telemetry.emit(
+            "verification_completed",
+            {
+                "verification_id": verification.verification_id,
+                "task": task,
+                "passed": verification.passed,
+                "consensus_score": verification.consensus_score,
+            },
+        )
+        if verification.passed:
+            return
+
+        self.verification_fail_count += 1
+        self._apply_failed_verification_corrections(
+            verification=verification,
+            node_reward=node_reward,
+            generation_after_evolve=generation_after_evolve,
+        )
+
+    def _apply_failed_verification_corrections(
+        self,
+        verification: VerificationResult,
+        node_reward: float,
+        generation_after_evolve: int,
+    ):
+        penalty = round(max(0.0, node_reward), 8)
+        if penalty > 0:
+            current_balance = self.ledger.get_balance(self.node_id)
+            debit_amount = min(current_balance, penalty)
+            if debit_amount > 0:
+                self.ledger.debit(
+                    self.node_id,
+                    debit_amount,
+                    f"Verification penalty: {verification.verification_id}",
+                )
+                self.ledger.credit(
+                    UNCLAIMED_RESERVE_ACCOUNT,
+                    debit_amount,
+                    f"Verification reserve: {verification.verification_id}",
+                )
+
+        if self.evolution.generation == generation_after_evolve and generation_after_evolve > 0:
+            self.evolution.rollback_generation(generation_after_evolve - 1)
+            promotion_blocked = True
+        else:
+            promotion_blocked = False
+
+        self.telemetry.emit(
+            "verification_penalty_applied",
+            {
+                "verification_id": verification.verification_id,
+                "penalty": penalty,
+                "promotion_blocked": promotion_blocked,
+            },
+            level="WARN",
+        )
+
+    async def wait_for_verifications(self, timeout: float | None = None):
+        """Wait for all scheduled verification jobs."""
+        tasks = list(self._verification_tasks)
+        if not tasks:
+            return
+        if timeout is None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+
+    def verification_report(self) -> dict:
+        """Return summary of verification outcomes for this node."""
+        total = len(self.verifier.history)
+        passed = sum(1 for item in self.verifier.history if item.passed)
+        failed = total - passed
+        return {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "pending": len(self._verification_tasks),
+            "items": [item.to_dict() for item in self.verifier.history[-20:]],
+        }
+
+    def export_attestation(self, relative_path: str = "attestation.json") -> str:
+        payload = build_attestation_payload(
+            node_id=self.node_id,
+            fingerprint=self.sybil_guard.fingerprint,
+            mode=self.mode,
+        )
+        path = self.sandbox.resolve_path(relative_path)
+        write_json_document(path, payload)
+        self.telemetry.emit("attestation_exported", {"path": str(path)})
+        return str(path)
+
+    def export_diagnostics(
+        self,
+        relative_path: str = "diagnostics.json",
+        include_telemetry_tail: int = 200,
+    ) -> str:
+        diagnostics = {
+            "health": self.get_health(),
+            "verification": self.verification_report(),
+            "p2p_stats": self.p2p.get_stats(),
+            "ledger_stats": self.ledger.get_stats(),
+            "telemetry_tail": self.telemetry.events(limit=include_telemetry_tail),
+        }
+        path = self.sandbox.resolve_path(relative_path)
+        write_json_document(path, diagnostics)
+        self.telemetry.emit("diagnostics_exported", {"path": str(path)})
+        return str(path)
+
     def get_health(self) -> dict:
         """Return a compact health snapshot for operations checks."""
         snapshot = build_health_snapshot(
@@ -191,7 +357,12 @@ class OmniNode:
             policy_blocks=self.policy_block_count,
             telemetry_events=self.telemetry.count,
         )
-        return snapshot.to_dict()
+        data = snapshot.to_dict()
+        data["verification_failures"] = self.verification_fail_count
+        data["verification_pending"] = len(self._verification_tasks)
+        data["sybil_blocks"] = self.sybil_block_count
+        data["node_fingerprint"] = self.sybil_guard.fingerprint
+        return data
 
     def _score_swarm_result(self, task: str, result: str) -> float:
         """Derive a bounded verification-based fitness score for one swarm."""

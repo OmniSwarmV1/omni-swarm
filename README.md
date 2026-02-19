@@ -42,6 +42,28 @@ The IPFS pubsub adapter uses `ipfshttpclient`. This client currently works more 
 - Runbooks: `docs/runbooks/`
 - Launch plan: `docs/launch/first-1000-cohort.md`
 - Governance: `docs/governance/`
+- Support playbook: `docs/launch/support-playbook.md`
+- Issue labels: `docs/launch/issue-labels.md`
+
+## Canary Gate Commands
+
+Run local canary stress simulation:
+
+```bash
+python scripts/run_canary_stress.py --nodes 10 --tasks-per-node 2
+```
+
+Evaluate go/no-go thresholds:
+
+```bash
+python scripts/canary_go_no_go.py --report canary_report.json
+```
+
+Critical release gate:
+
+```bash
+python scripts/go_no_go_check.py
+```
 
 ## Claim Link for the First 1000 Nodes
 

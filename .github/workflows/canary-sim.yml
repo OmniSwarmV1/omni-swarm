@@ -1,0 +1,46 @@
+name: Canary Simulation Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: "Number of canary nodes"
+        required: false
+        default: "10"
+      tasks_per_node:
+        description: "Tasks per node"
+        required: false
+        default: "2"
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run canary stress simulation
+        run: |
+          python scripts/run_canary_stress.py --nodes "${{ github.event.inputs.nodes || '10' }}" --tasks-per-node "${{ github.event.inputs.tasks_per_node || '2' }}"
+
+      - name: Evaluate canary go/no-go
+        run: |
+          python scripts/canary_go_no_go.py --report canary_report.json
+
+      - name: Upload canary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-artifacts
+          path: |
+            canary_report.json
+            canary_gate_report.json
